@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import json
+import time  # 🌟 追加：時間をコントロールするための道具
 from docx import Document
 from io import BytesIO
 
@@ -8,8 +9,6 @@ from io import BytesIO
 st.set_page_config(page_title="高度企業分析AIエージェント", layout="wide")
 
 st.sidebar.title("🛠️ 設定")
-
-# 🌟 追加機能：Secretsに GEMINI_API_KEY が設定されていれば自動で読み込む
 default_api_key = st.secrets.get("GEMINI_API_KEY", "")
 api_key = st.sidebar.text_input("Gemini API Key", value=default_api_key, type="password")
 
@@ -22,7 +21,6 @@ AGENT_TASKS = {
 }
 
 def run_research_agent(company_name, task_description):
-    # ⚠️ 修正ポイント：前回の成功版モデル名に戻し、検索機能の書き方を最新仕様に最適化
     model = genai.GenerativeModel(
         model_name='gemini-3.1-flash-lite-preview', 
         tools='google_search_retrieval' 
@@ -52,9 +50,14 @@ if st.button("🚀 分析を開始する"):
         try:
             # 各エージェントを順番に実行
             for i, (key, task) in enumerate(AGENT_TASKS.items()):
-                status_text.text(f"⏳ エージェント [{key}] がリサーチ中...")
+                status_text.text(f"⏳ エージェント [{key}] がリサーチ中... (Google検索を実行中)")
                 results[key] = run_research_agent(company_name, task)
                 progress_bar.progress((i + 1) / len(AGENT_TASKS))
+                
+                # 🌟 追加：次のエージェントが動く前に10秒間待機する（無料枠のエラー回避）
+                if i < len(AGENT_TASKS) - 1:
+                    status_text.text("☕ APIの制限を回避するため、10秒間待機しています...")
+                    time.sleep(10)
             
             status_text.success("✅ 全エージェントのリサーチが完了しました！")
             
