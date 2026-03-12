@@ -20,9 +20,9 @@ AGENT_TASKS = {
 }
 
 def run_research_agent(company_name, task_description):
-    # 🌟 修正ポイント：検索機能（tools）を削除し、AIが元々持っている知識で生成させます
+    # 🌟 修正：前回のPDFアプリで実績のある最新モデルに戻す（検索機能は一時OFF）
     model = genai.GenerativeModel(
-        model_name='gemini-1.5-flash'
+        model_name='gemini-3.1-flash-lite-preview'
     )
     prompt = f"対象企業: {company_name}\n指示: {task_description}\n事実と推論を分けて、論理的に記述してください。"
     response = model.generate_content(prompt)
@@ -52,7 +52,7 @@ if st.button("🚀 分析を開始する"):
                 results[key] = run_research_agent(company_name, task)
                 progress_bar.progress((i + 1) / len(AGENT_TASKS))
                 
-                # 通常のAPI制限（1分間に15回）を安全にクリアするため、5秒だけ待機します
+                # 通常のAPI制限を安全にクリアするため、5秒だけ待機します
                 if i < len(AGENT_TASKS) - 1:
                     status_text.text("☕ APIの制限を回避するため、5秒間待機しています...")
                     time.sleep(5)
