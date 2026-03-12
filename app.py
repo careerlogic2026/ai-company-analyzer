@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
-import json
-import time  # 🌟 追加：時間をコントロールするための道具
+import time
 from docx import Document
 from io import BytesIO
 
@@ -21,17 +20,17 @@ AGENT_TASKS = {
 }
 
 def run_research_agent(company_name, task_description):
+    # 🌟 修正ポイント：検索機能（tools）を削除し、AIが元々持っている知識で生成させます
     model = genai.GenerativeModel(
-        model_name='gemini-3.1-flash-lite-preview', 
-        tools='google_search_retrieval' 
+        model_name='gemini-1.5-flash'
     )
-    prompt = f"対象企業: {company_name}\n指示: {task_description}\n必ず最新のIR情報やプレスリリースを確認し、事実と推論を分けて記述してください。"
+    prompt = f"対象企業: {company_name}\n指示: {task_description}\n事実と推論を分けて、論理的に記述してください。"
     response = model.generate_content(prompt)
     return response.text
 
 # --- メインUI ---
-st.title("🔍 高度企業分析AIレポート生成")
-st.info("企業名を入力すると、4つの専門家エージェントがネット上の最新情報をリサーチします。")
+st.title("🔍 高度企業分析AIレポート生成 (フェーズ1：検索なし版)")
+st.info("企業名を入力すると、4つの専門家エージェントがAIの知識ベースからレポートを作成します。")
 
 company_name = st.text_input("分析したい企業名を入力してください（例：株式会社マクアケ）")
 
@@ -48,18 +47,17 @@ if st.button("🚀 分析を開始する"):
         status_text = st.empty()
         
         try:
-            # 各エージェントを順番に実行
             for i, (key, task) in enumerate(AGENT_TASKS.items()):
-                status_text.text(f"⏳ エージェント [{key}] がリサーチ中... (Google検索を実行中)")
+                status_text.text(f"⏳ エージェント [{key}] が分析中...")
                 results[key] = run_research_agent(company_name, task)
                 progress_bar.progress((i + 1) / len(AGENT_TASKS))
                 
-                # 🌟 追加：次のエージェントが動く前に10秒間待機する（無料枠のエラー回避）
+                # 通常のAPI制限（1分間に15回）を安全にクリアするため、5秒だけ待機します
                 if i < len(AGENT_TASKS) - 1:
-                    status_text.text("☕ APIの制限を回避するため、10秒間待機しています...")
-                    time.sleep(10)
+                    status_text.text("☕ APIの制限を回避するため、5秒間待機しています...")
+                    time.sleep(5)
             
-            status_text.success("✅ 全エージェントのリサーチが完了しました！")
+            status_text.success("✅ 全エージェントの分析が完了しました！")
             
             # 結果を表示
             for key, content in results.items():
@@ -70,16 +68,3 @@ if st.button("🚀 分析を開始する"):
             doc = Document()
             doc.add_heading(f"{company_name} 企業研究レポート", 0)
             for key, content in results.items():
-                doc.add_heading(key.capitalize(), level=1)
-                doc.add_paragraph(content)
-                
-            bio = BytesIO()
-            doc.save(bio)
-            st.download_button(
-                label="📄 Wordレポートをダウンロード",
-                data=bio.getvalue(),
-                file_name=f"{company_name}_レポート.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-        except Exception as e:
-            st.error(f"⚠️ リサーチ中にエラーが発生しました: {e}")
