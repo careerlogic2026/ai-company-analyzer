@@ -68,3 +68,16 @@ if st.button("🚀 分析を開始する"):
             doc = Document()
             doc.add_heading(f"{company_name} 企業研究レポート", 0)
             for key, content in results.items():
+                doc.add_heading(key.capitalize(), level=1)
+                doc.add_paragraph(content)
+                
+            bio = BytesIO()
+            doc.save(bio)
+            st.download_button(
+                label="📄 Wordレポートをダウンロード",
+                data=bio.getvalue(),
+                file_name=f"{company_name}_レポート.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        except Exception as e:
+            st.error(f"⚠️ 分析中にエラーが発生しました: {e}")
