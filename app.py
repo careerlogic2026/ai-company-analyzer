@@ -8,7 +8,10 @@ from io import BytesIO
 st.set_page_config(page_title="高度企業分析AIエージェント", layout="wide")
 
 st.sidebar.title("🛠️ 設定")
-api_key = st.sidebar.text_input("Gemini API Key", type="password")
+
+# 🌟 追加機能：Secretsに GEMINI_API_KEY が設定されていれば自動で読み込む
+default_api_key = st.secrets.get("GEMINI_API_KEY", "")
+api_key = st.sidebar.text_input("Gemini API Key", value=default_api_key, type="password")
 
 # --- エージェントの定義 ---
 AGENT_TASKS = {
@@ -19,9 +22,10 @@ AGENT_TASKS = {
 }
 
 def run_research_agent(company_name, task_description):
+    # ⚠️ 修正ポイント：前回の成功版モデル名に戻し、検索機能の書き方を最新仕様に最適化
     model = genai.GenerativeModel(
-        model_name='gemini-1.5-flash',
-        tools=[{"google_search_retrieval": {}}] # 🌐 検索機能（Grounding）を有効化
+        model_name='gemini-3.1-flash-lite-preview', 
+        tools='google_search_retrieval' 
     )
     prompt = f"対象企業: {company_name}\n指示: {task_description}\n必ず最新のIR情報やプレスリリースを確認し、事実と推論を分けて記述してください。"
     response = model.generate_content(prompt)
@@ -45,31 +49,34 @@ if st.button("🚀 分析を開始する"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # 各エージェントを順番に実行（将来的には非同期で並列化）
-        for i, (key, task) in enumerate(AGENT_TASKS.items()):
-            status_text.text(f"⏳ エージェント [{key}] がリサーチ中...")
-            results[key] = run_research_agent(company_name, task)
-            progress_bar.progress((i + 1) / len(AGENT_TASKS))
-        
-        status_text.success("✅ 全エージェントのリサーチが完了しました！")
-        
-        # 結果を表示
-        for key, content in results.items():
-            with st.expander(f"📊 {key.capitalize()} 分析結果"):
-                st.markdown(content)
-        
-        # --- 簡易Word出力 ---
-        doc = Document()
-        doc.add_heading(f"{company_name} 企業研究レポート", 0)
-        for key, content in results.items():
-            doc.add_heading(key.capitalize(), level=1)
-            doc.add_paragraph(content)
+        try:
+            # 各エージェントを順番に実行
+            for i, (key, task) in enumerate(AGENT_TASKS.items()):
+                status_text.text(f"⏳ エージェント [{key}] がリサーチ中...")
+                results[key] = run_research_agent(company_name, task)
+                progress_bar.progress((i + 1) / len(AGENT_TASKS))
             
-        bio = BytesIO()
-        doc.save(bio)
-        st.download_button(
-            label="📄 Wordレポートをダウンロード",
-            data=bio.getvalue(),
-            file_name=f"{company_name}_レポート.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+            status_text.success("✅ 全エージェントのリサーチが完了しました！")
+            
+            # 結果を表示
+            for key, content in results.items():
+                with st.expander(f"📊 {key.capitalize()} 分析結果"):
+                    st.markdown(content)
+            
+            # --- 簡易Word出力 ---
+            doc = Document()
+            doc.add_heading(f"{company_name} 企業研究レポート", 0)
+            for key, content in results.items():
+                doc.add_heading(key.capitalize(), level=1)
+                doc.add_paragraph(content)
+                
+            bio = BytesIO()
+            doc.save(bio)
+            st.download_button(
+                label="📄 Wordレポートをダウンロード",
+                data=bio.getvalue(),
+                file_name=f"{company_name}_レポート.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        except Exception as e:
+            st.error(f"⚠️ リサーチ中にエラーが発生しました: {e}")
