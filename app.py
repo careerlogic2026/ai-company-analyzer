@@ -7,7 +7,6 @@ from io import BytesIO
 from docx import Document
 from tavily import TavilyClient
 import time
-from urllib.parse import urlparse
 import re
 import datetime
 
@@ -38,6 +37,7 @@ def extract_text_from_url(url):
         headers = {"User-Agent": "Mozilla/5.0"}
         if url.lower().endswith(".pdf"):
             res = requests.get(url, headers=headers, timeout=15)
+            res.raise_for_status()
             reader = PyPDF2.PdfReader(BytesIO(res.content))
             return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])[:20000]
         
@@ -79,8 +79,6 @@ PROMPT_HR = (
     "※抽象表現は排除し、個別エピソードを経営視点で解説してください。"
 )
 
-# --- 編集長（統合）用 セクション別プロンプト ---
-# 一括書きによる「内容の薄まり」を防ぐため、1章ずつ個別に指示を出します
 EDITOR_PROMPTS = {
     "1. 業界構造とビジネスモデル": (
         "提供された全ファクトを用いて、『1. 業界構造とビジネスモデル』の章を1000文字以上で執筆してください。\n"
@@ -105,68 +103,71 @@ EDITOR_PROMPTS = {
 }
 
 # ==========================================
-# UIセクション 1: 入力と広域・精密検索
+# UIセクション 1: 入力とハイブリッド検索（手動IR＋自動PR/HR）
 # ==========================================
 st.title("🎯 真・高度企業分析: マルチエージェント・ディープリサーチ")
-st.write("企業情報に基づき、AIが『情報の抽出 ➡ 考察 ➡ ストーリー統合』を自動で行います。")
+st.write("確実なIR情報と、AIが厳選した最新ニュース・社員記事を統合し、圧倒的な熱量のレポートを生成します。")
 
+company = st.text_input("🏢 企業名", value="株式会社マクアケ")
+
+# --- 対策1: IR資料のダイレクト入力（完全手動） ---
+st.subheader("📊 1-A. 【確実性担保】重要IR資料の直接指定")
+ir_urls_input = st.text_area(
+    "最新の「決算説明会資料」や「中期経営計画」のPDFリンク（URL）を改行で入力してください。（※ここにいれた資料を最優先で精読します）",
+    value="https://pdf.irpocket.com/C4477/yD3U/v5c7/O11m.pdf\n", # マクアケのサンプルURL（ダミー）
+    height=100
+)
+
+# --- 対策2&3: メディアURL指定 ---
+st.subheader("🌐 1-B. 【網羅的抽出】メディア・採用ページの指定")
 col1, col2 = st.columns(2)
 with col1:
-    company = st.text_input("企業名", value="株式会社マクアケ")
-    hp_url = st.text_input("公式HP URL", value="https://www.makuake.co.jp/")
-with col2:
     pr_url = st.text_input("PR TIMES URL", value="https://prtimes.jp/main/html/searchrlp/company_id/36381")
+with col2:
     rec_url = st.text_input("Wantedly URL", value="https://www.wantedly.com/companies/makuake")
 
-if st.button("🔍 1. 広域メディアから最新・重要記事を抽出", type="primary"):
+with st.expander("⚙️ 各エージェントへの指示（プロンプト）を確認・編集", expanded=False):
+    prompt_fin = st.text_area("🕵️‍♂️ 財務・戦略担当へ", value=PROMPT_FIN, height=120)
+    prompt_pr = st.text_area("🕵️‍♂️ 広報担当へ", value=PROMPT_PR, height=120)
+    prompt_hr = st.text_area("🕵️‍♂️ ヒト・組織担当へ", value=PROMPT_HR, height=120)
+
+if st.button("🔍 1. 対象メディアから最新・重要記事を抽出", type="primary"):
     if not tavily_key: st.error("サイドバーにTavily APIキーを設定してください。"); st.stop()
     
-    with st.spinner("Tavily AIを用いて『IR三種の神器』と『マルチドメイン記事』を抽出中..."):
+    with st.spinner("手動IRをセットし、Tavily AIで最新ニュースと組織記事を抽出中..."):
         client = TavilyClient(api_key=tavily_key)
         results = {"IR・財務": [], "PR・ニュース": [], "ヒト・組織": []}
         
-        current_year = datetime.date.today().year
-        recent_years = f"{current_year-1} OR {current_year}"
-        
         try:
-            # 1. IR: 三種の神器と最新年にピンポイント指定
-            if hp_url:
-                domain = urlparse(hp_url).netloc
-                q_ir = f"{company} (決算短信 OR 決算説明会資料 OR 中期経営計画) {recent_years} site:{domain}"
-                raw_ir = client.search(query=q_ir, max_results=10).get("results", [])
-                results["IR・財務"] = raw_ir[:5] # 重要な5件に絞る
+            # 1. IR・財務 (手動入力URLを直接リスト化)
+            ir_urls = [u.strip() for u in ir_urls_input.split('\n') if u.strip()]
+            for i, url in enumerate(ir_urls):
+                results["IR・財務"].append({"title": f"指定されたIR資料 ({i+1})", "url": url})
             
-            # 2. PR: ID指定(自社) ＋ 外部メディア(日経/note等)のintitle検索
+            # 2. PR・ニュース (Newsモード & 過去1年縛り)
             pr_id_match = re.search(r'company_id/(\d+)', pr_url) if pr_url else None
-            pr_id = pr_id_match.group(1) if pr_id_match else ""
+            pr_id = pr_id_match.group(1) if pr_id_match else company
             
-            q_pr_ext = f"intitle:{company} (提携 OR リリース OR 新機能) site:nikkei.com OR site:note.com OR site:prtimes.jp"
-            raw_pr = client.search(query=q_pr_ext, max_results=20).get("results", [])
+            q_pr_ext = f"{company} (提携 OR リリース OR 新機能) site:prtimes.jp"
+            # TavilyのNews検索機能と日数指定を活用
+            raw_pr = client.search(query=q_pr_ext, topic="news", days=365, max_results=20).get("results", [])
             
             filtered_pr = []
             for r in raw_pr:
-                # PR TIMESの場合は自社IDのみ、他メディアはそのまま追加
-                if "prtimes.jp" in r["url"]:
-                    if pr_id and pr_id in r["url"] and "/rd/p/" in r["url"]:
-                        filtered_pr.append(r)
-                else:
+                if pr_id in r["url"] and "/rd/p/" in r["url"]:
                     filtered_pr.append(r)
-            results["PR・ニュース"] = filtered_pr[:10] # 10件に増量
+            results["PR・ニュース"] = filtered_pr[:10]
             
-            # 3. HR: Wantedly ＋ 外部メディア(note)のハイブリッド
-            rec_slug_match = re.search(r'companies/([^/]+)', rec_url) if rec_url else None
-            rec_slug = rec_slug_match.group(1) if rec_slug_match else company
-            
-            q_hr_ext = f"intitle:{company} (インタビュー OR 採用 OR 社員) site:wantedly.com OR site:note.com"
+            # 3. ヒト・組織 (ノイズキャンセリング検索)
+            # "-分析 -株価 -投資" で個人投資家のnoteなどを完全排除
+            q_hr_ext = f"intitle:{company} (インタビュー OR 社員 OR 働き方) -分析 -株価 -投資 -業績 site:wantedly.com OR site:note.com"
             raw_hr = client.search(query=q_hr_ext, max_results=20).get("results", [])
             
             filtered_hr = []
             for r in raw_hr:
-                if "wantedly.com" in r["url"]:
-                    if rec_slug in r["url"] or "post_articles" in r["url"]: filtered_hr.append(r)
-                else:
+                if "wantedly.com" in r["url"] or "note.com" in r["url"]:
                     filtered_hr.append(r)
-            results["ヒト・組織"] = filtered_hr[:10] # 10件に増量
+            results["ヒト・組織"] = filtered_hr[:10]
 
             st.session_state.search_results = results
             st.session_state.search_done = True
@@ -182,8 +183,8 @@ st.markdown("---")
 # UIセクション 2: ソース選択
 # ==========================================
 if st.session_state.search_done:
-    st.subheader("📚 2. 精読対象の選択（情報量の担保）")
-    st.info("広域検索により外部メディアも含めて抽出しました。チェックを入れた記事を全てディープリードします。")
+    st.subheader("📚 2. 精読対象の確認")
+    st.info("IRは指定URLを、PR/HRは『直近1年』『ノイズ除外』で抽出した高純度リストです。不要なものは外してください。")
     
     selected_urls = {"IR・財務": [], "PR・ニュース": [], "ヒト・組織": []}
     tabs = st.tabs(list(st.session_state.search_results.keys()))
@@ -215,9 +216,9 @@ if st.session_state.research_done:
     model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
     
     categories = [
-        ("IR・財務", PROMPT_FIN, "財務・戦略"),
-        ("PR・ニュース", PROMPT_PR, "広報・戦略"),
-        ("ヒト・組織", PROMPT_HR, "人事・組織開発")
+        ("IR・財務", prompt_fin, "財務・戦略"),
+        ("PR・ニュース", prompt_pr, "広報・戦略"),
+        ("ヒト・組織", prompt_hr, "人事・組織開発")
     ]
     
     fact_logs_all = {}
