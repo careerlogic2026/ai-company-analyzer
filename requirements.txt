@@ -1,8 +1,8 @@
 streamlit
 google-generativeai
 python-docx
-python-pptx
 pandas
-gspread
-google-auth
-duckduckgo-search
+tavily-python
+beautifulsoup4
+PyPDF2
+requests
