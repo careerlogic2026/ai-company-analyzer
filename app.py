@@ -10,194 +10,153 @@ import time
 from urllib.parse import urljoin
 
 # --- 初期設定 ---
-st.set_page_config(page_title="高度企業分析AI (Human-in-the-Loop版)", layout="wide")
-st.sidebar.title("🛠️ 設定")
-gemini_api_key = st.sidebar.text_input("Gemini API Key", value=st.secrets.get("GEMINI_API_KEY", ""), type="password")
-tavily_api_key = st.sidebar.text_input("Tavily API Key", value=st.secrets.get("TAVILY_API_KEY", ""), type="password")
+st.set_page_config(page_title="次世代企業分析AIエージェント", layout="wide")
 
-# --- 状態管理 (画面遷移用) ---
-if "step" not in st.session_state:
-    st.session_state.step = 1
-if "candidates" not in st.session_state:
-    st.session_state.candidates = []
-if "company_name" not in st.session_state:
-    st.session_state.company_name = ""
+# --- CSSでUIを整える ---
+st.markdown("""
+    <style>
+    .main { background-color: #f8f9fa; }
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
+    .source-card { background-color: white; padding: 15px; border-radius: 10px; border-left: 5px solid #007bff; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- ツール関数：PDFとWebの深掘り読み込み ---
-def read_pdf_from_url(url):
-    """PDFをダウンロードしてテキストを抽出"""
+st.sidebar.title("🛠️ API設定")
+gemini_key = st.sidebar.text_input("Gemini API Key", value=st.secrets.get("GEMINI_API_KEY", ""), type="password")
+tavily_key = st.sidebar.text_input("Tavily API Key", value=st.secrets.get("TAVILY_API_KEY", ""), type="password")
+
+if "step" not in st.session_state: st.session_state.step = 1
+if "search_results" not in st.session_state: st.session_state.search_results = {}
+
+# --- ツール関数 ---
+def deep_read_content(url):
+    """Web/PDFの全文抽出 + 1階層下のPDFも追跡"""
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        reader = PyPDF2.PdfReader(BytesIO(response.content))
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-        return text[:10000] # 長すぎる場合は1万文字でカット
-    except Exception as e:
-        return f"[PDF読み込み失敗: {url} ({e})]"
-
-def deep_read_url(url):
-    """Webページを読み込み、さらに1階層目のPDFリンクも探して読む"""
-    if url.lower().endswith(".pdf"):
-        return read_pdf_from_url(url)
-    
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
+        headers = {"User-Agent": "Mozilla/5.0"}
+        if url.lower().endswith(".pdf"):
+            res = requests.get(url, headers=headers, timeout=10)
+            reader = PyPDF2.PdfReader(BytesIO(res.content))
+            return "\n".join([p.extract_text() for p in reader.pages])[:15000]
         
-        # 1. 本文の抽出
-        main_text = soup.get_text(separator='\n', strip=True)[:10000]
-        result_text = f"【本文】\n{main_text}\n"
+        res = requests.get(url, headers=headers, timeout=10)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.content, 'html.parser')
         
-        # 2. 1階層目のPDFリンクを探して読む（最大2個まで：無限ループ防止）
-        pdf_links = []
-        for a_tag in soup.find_all('a', href=True):
-            href = a_tag['href']
-            if href.lower().endswith('.pdf'):
-                full_url = urljoin(url, href)
-                if full_url not in pdf_links:
-                    pdf_links.append(full_url)
-                    
-        for i, pdf_url in enumerate(pdf_links[:2]):
-            result_text += f"\n【関連PDFデータ({i+1})】\n{read_pdf_from_url(pdf_url)}\n"
-            
-        return result_text
-    except Exception as e:
-        return f"[Web読み込み失敗: {url} ({e})]"
+        # 本文抽出 (広告などを除外)
+        for s in soup(['script', 'style', 'nav', 'header', 'footer']): s.decompose()
+        text = soup.get_text(separator='\n', strip=True)[:10000]
+        
+        # 1階層下のPDFリンクを1つだけ追跡
+        pdf_text = ""
+        for a in soup.find_all('a', href=True):
+            if a['href'].lower().endswith('.pdf'):
+                pdf_url = urljoin(url, a['href'])
+                pdf_text = "\n【追加資料PDF】\n" + deep_read_content(pdf_url)
+                break 
+        return text + pdf_text
+    except:
+        return "[読み込み失敗]"
 
 # ==========================================
-# UI ステップ1：入力とソース検索
+# STEP 1: カテゴリ別検索
 # ==========================================
 if st.session_state.step == 1:
-    st.title("🔍 Step 1: 企業名と事前情報の入力")
-    
-    company_name = st.text_input("分析したい企業名（例：株式会社マクアケ）")
-    mandatory_urls = st.text_area("📌 必ずリサーチしてほしいURL（1行に1つ）\n例：公式IRページのURLや、読んでほしいプレスリリースのURL")
-    
-    if st.button("🌐 高精度ソース候補を検索する"):
-        if not gemini_api_key or not tavily_api_key:
-            st.error("サイドバーにAPIキーを設定してください。")
-        elif not company_name:
-            st.error("企業名を入力してください。")
+    st.title("🔍 高度企業分析: ソース収集")
+    company = st.text_input("分析したい企業名を入力", placeholder="例：株式会社マクアケ")
+    mandatory = st.text_area("📌 必ず読み込んでほしいURL（任意）")
+
+    if st.button("🚀 最新情報をカテゴリ別にリサーチ"):
+        if not gemini_key or not tavily_key:
+            st.error("APIキーが必要です")
         else:
-            st.session_state.company_name = company_name
-            st.session_state.mandatory_urls = [u.strip() for u in mandatory_urls.split('\n') if u.strip()]
-            
-            with st.spinner("Tavily AIが最新のIR、ニュース、インタビュー候補を収集中..."):
-                try:
-                    tavily_client = TavilyClient(api_key=tavily_api_key)
-                    # 企業に関するIR・採用・ニュースをまとめて検索
-                    query = f"{company_name} 決算資料 OR 中期経営計画 OR 採用インタビュー OR 最新ニュース"
-                    response = tavily_client.search(query=query, search_depth="advanced", max_results=10)
-                    
-                    st.session_state.candidates = response.get("results", [])
-                    st.session_state.step = 2
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"検索エラー: {e}")
+            tavily = TavilyClient(api_key=tavily_key)
+            with st.spinner(f"{company} の情報を主要メディアから収集しています..."):
+                # カテゴリ別の検索クエリ定義
+                queries = {
+                    "IR・財務": f"{company} (site:xj-storage.jp OR site:pronexus.co.jp OR site:nikkei.com) 決算資料 中期経営計画",
+                    "PR・ニュース": f"{company} (site:prtimes.jp OR site:business.nikkei.com OR site:newspicks.com) 最新 プレスリリース",
+                    "ヒト・社風": f"{company} (site:wantedly.com OR site:talentbook.jp OR site:note.com) 社員インタビュー 働き方"
+                }
+                
+                results = {}
+                for cat, q in queries.items():
+                    resp = tavily.search(query=q, search_depth="advanced", max_results=5)
+                    results[cat] = resp.get("results", [])
+                
+                st.session_state.search_results = results
+                st.session_state.company = company
+                st.session_state.mandatory_urls = [u.strip() for u in mandatory.split('\n') if u.strip()]
+                st.session_state.step = 2
+                st.rerun()
 
 # ==========================================
-# UI ステップ2：ソースの選択
+# STEP 2: 視覚的なソース選択
 # ==========================================
 elif st.session_state.step == 2:
-    st.title("✅ Step 2: リサーチ対象ソースの選択")
-    st.info("AIが見つけてきた最新ソースの候補です。深掘りしてほしいものにチェックを入れてください。")
-    
+    st.title(f"✅ リサーチ対象の選定: {st.session_state.company}")
+    st.write("各メディアから取得した候補です。AIに精読させたいものを選んでください。")
+
     selected_urls = []
-    
-    for i, res in enumerate(st.session_state.candidates):
-        title = res.get('title', 'No Title')
-        url = res.get('url', '')
-        snippet = res.get('content', '')
-        
-        st.markdown(f"**{title}**")
-        st.caption(f"🔗 {url}")
-        st.write(f"概要: {snippet}")
-        # デフォルトで上から3つはチェックを入れておく
-        if st.checkbox(f"このソースを深掘りする", key=f"chk_{i}", value=(i < 3)):
-            selected_urls.append(url)
-        st.markdown("---")
-        
-    if st.button("🚀 選択したソースでディープリサーチ開始"):
+    tabs = st.tabs(list(st.session_state.search_results.keys()))
+
+    for i, cat in enumerate(st.session_state.search_results.keys()):
+        with tabs[i]:
+            for j, res in enumerate(st.session_state.search_results[cat]):
+                with st.container():
+                    st.markdown(f"""<div class='source-card'><b>{res['title']}</b><br><small>{res['url']}</small></div>""", unsafe_allow_html=True)
+                    if st.checkbox("このソースを精読対象に含める", key=f"{cat}_{j}", value=(j<2)):
+                        selected_urls.append(res['url'])
+
+    if st.button("🧠 選択したソースで重厚な分析を開始"):
         st.session_state.selected_urls = selected_urls
         st.session_state.step = 3
         st.rerun()
-        
-    if st.button("⬅️ Step 1に戻る"):
-        st.session_state.step = 1
-        st.rerun()
 
 # ==========================================
-# UI ステップ3：深掘り＆レポート生成
+# STEP 3: コンサルタント級レポート生成
 # ==========================================
 elif st.session_state.step == 3:
-    st.title("🧠 Step 3: ディープリサーチ＆レポート生成")
+    st.title("📊 最終分析レポート生成")
+    all_urls = st.session_state.mandatory_urls + st.session_state.selected_urls
     
-    # ユーザー指定URLと選択したURLを合体
-    all_target_urls = st.session_state.mandatory_urls + st.session_state.selected_urls
-    
-    if not all_target_urls:
-        st.warning("ソースが一つも選択されていませんが、AIの知識のみで生成します。")
-        
-    st.write(f"📚 以下の {len(all_target_urls)} 件のURL（およびその階層下のPDF）を精読しています...")
-    
-    # --- 全ソースの深掘り読み込み ---
-    context_data = ""
-    progress_bar = st.progress(0)
-    for i, url in enumerate(all_target_urls):
-        st.text(f"📖 読み込み中: {url}")
-        extracted_text = deep_read_url(url)
-        context_data += f"\n\n【ソースURL: {url} の内容】\n{extracted_text}\n"
-        progress_bar.progress((i + 1) / len(all_target_urls))
-        time.sleep(1) # サーバー負荷軽減
-        
-    st.success("✅ ソースの精読が完了しました。レポートを執筆します。")
-    
-    # --- AIによるレポート生成 ---
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel(model_name='gemini-3.1-flash-lite-preview')
+    with st.status("一次情報を精読・分析中...", expanded=True) as status:
+        full_context = ""
+        for url in all_urls:
+            st.write(f"📖 読み込み中: {url}")
+            full_context += f"\n--- SOURCE: {url} ---\n{deep_read_content(url)}\n"
+        status.update(label="精読完了！レポートを執筆しています...", state="complete")
+
+    # プロンプトの強化（戦略コンサルタントとしての推論を促す）
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel('gemini-3.1-flash-lite-preview')
     
     prompt = f"""
-    対象企業: {st.session_state.company_name}
-    
-    以下の【収集した最新一次情報】を最も重要なファクトとして読み込み、企業研究レポートを作成してください。
-    
-    【収集した最新一次情報（Web本文・PDFデータ）】
-    {context_data}
-    
-    【出力要件】
-    1. 業界構造とビジネスモデル（収益の仕組みと最新トレンド）
-    2. 競合比較・SWOT分析（独自の強みと課題）
-    3. 働く社員と求める人物像（採用情報やインタビューに基づく）
-    4. キャリアパスと市場価値（3年後、30歳時点など）
-    
-    事実と推論を明確に分け、見出しをつけて論理的に記述してください。
+    あなたは超一流のビジネスアナリスト兼キャリアコンサルタントです。
+    提供された【最新の一次情報】を「点」として捉え、そこから読み取れる企業の「真の戦略」と「学生が描ける未来」を、圧倒的な熱量と文字数で論理的に構築してください。
+
+    【一次情報（Web/PDFデータ）】
+    {full_context}
+
+    【レポートの構成要件】
+    1. ビジネスモデルの核心（収益の仕組みを構造的に解説し、一次情報から読み取れる最新の戦略的転換点を指摘せよ）
+    2. 競合優位性とSWOT分析（単なる事実の羅列ではなく、他社が真似できない「聖域」がどこにあるかを推論せよ）
+    3. 実在の人物から読み解く組織文化（記事に登場する社員の言動から、この会社で評価される「共通のDNA」を言語化せよ）
+    4. 3年後・30歳・40歳の市場価値（一次情報で示された成長戦略に基づき、この会社で得られるスキルが、他業界でどう評価されるか、具体的な転職・独立シナリオまで大胆に推論せよ）
+
+    ※単なる情報の要約は厳禁。事実に裏打ちされた「大胆な考察（Gap Filling）」を各項目で展開すること。
     """
-    
-    with st.spinner("AIが収集した膨大なデータを統合し、レポートを執筆中..."):
-        try:
-            response = model.generate_content(prompt)
-            st.markdown(response.text)
-            
-            # --- Word出力 ---
-            doc = Document()
-            doc.add_heading(f"{st.session_state.company_name} ディープリサーチレポート", 0)
-            doc.add_paragraph(response.text)
-            
-            bio = BytesIO()
-            doc.save(bio)
-            st.download_button(
-                label="📄 Wordレポートをダウンロード",
-                data=bio.getvalue(),
-                file_name=f"{st.session_state.company_name}_DeepReport.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-        except Exception as e:
-            st.error(f"レポート生成中にエラーが発生しました: {e}")
-            
-    if st.button("🔄 最初からやり直す"):
+
+    with st.spinner("思考を整理し、未来を予測しています..."):
+        response = model.generate_content(prompt)
+        st.markdown(response.text)
+        
+        # Word出力
+        doc = Document()
+        doc.add_heading(f"{st.session_state.company} 徹底分析レポート", 0)
+        doc.add_paragraph(response.text)
+        bio = BytesIO(); doc.save(bio)
+        st.download_button("📄 レポートをWordで保存", data=bio.getvalue(), file_name="Report.docx")
+
+    if st.button("🔄 最初から"):
         st.session_state.step = 1
-        st.session_state.candidates = []
         st.rerun()
