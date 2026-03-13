@@ -138,6 +138,9 @@ if st.button("🔍 1. 対象メディアから最新・重要記事を抽出", t
         client = TavilyClient(api_key=tavily_key)
         results = {"IR・財務": [], "PR・ニュース": [], "ヒト・組織": []}
         
+        # 社名から「株式会社」などを省いた略称を作成（検索ヒット率を劇的に上げるため）
+        short_company = company.replace("株式会社", "").replace("合同会社", "").strip()
+        
         try:
             # 1. 財務・戦略 (手動入力URL)
             ir_urls = [u.strip() for u in ir_urls_input.split('\n') if u.strip()]
@@ -146,10 +149,16 @@ if st.button("🔍 1. 対象メディアから最新・重要記事を抽出", t
             
             # 2. PR・ニュース (Newsモード & 過去1年)
             pr_id_match = re.search(r'company_id/(\d+)', pr_url) if pr_url else None
-            pr_id = pr_id_match.group(1) if pr_id_match else company
+            pr_id = pr_id_match.group(1) if pr_id_match else short_company
             
-            q_pr_ext = f"{company} (提携 OR リリース OR 新機能) site:prtimes.jp"
-            raw_pr = client.search(query=q_pr_ext, topic="news", days=365, max_results=30).get("results", [])
+            q_pr_ext = f"{short_company} 提携 OR リリース OR 新機能"
+            raw_pr = client.search(
+                query=q_pr_ext, 
+                topic="news", 
+                days=365, 
+                include_domains=["prtimes.jp"],
+                max_results=30
+            ).get("results", [])
             
             filtered_pr = []
             for r in raw_pr:
@@ -157,19 +166,37 @@ if st.button("🔍 1. 対象メディアから最新・重要記事を抽出", t
                     filtered_pr.append(r)
             results["PR・ニュース"] = filtered_pr[:15]
             
-            # 3. ヒト・組織 (圧倒的ボリューム化 & 高純度フィルタ)
+            # 3. ヒト・組織 (圧倒的ボリューム化 & Python側での高純度フィルタ)
             rec_slug_match = re.search(r'companies/([^/]+)', rec_url) if rec_url else None
-            rec_slug = rec_slug_match.group(1) if rec_slug_match else company
+            rec_slug = rec_slug_match.group(1) if rec_slug_match else short_company
             
-            # ドメインを大幅拡張し、50件取得
-            q_hr_ext = f'intitle:"{company}" (インタビュー OR 社員 OR 採用 OR 入社 OR カルチャー) -分析 -株価 -投資 -業績 -決算 -予想 site:wantedly.com OR site:note.com OR site:talentbook.jp OR site:prtimes.jp OR site:fastgrow.jp'
-            raw_hr = client.search(query=q_hr_ext, max_results=50).get("results", [])
+            # クエリは極力シンプルにし、ドメインはAPIパラメータで指定
+            q_hr_ext = f"{short_company} インタビュー OR 社員 OR 採用 OR カルチャー"
+            hr_domains = ["wantedly.com", "note.com", "talentbook.jp", "prtimes.jp", "fastgrow.jp"]
+            
+            raw_hr = client.search(
+                query=q_hr_ext, 
+                include_domains=hr_domains, 
+                max_results=50
+            ).get("results", [])
             
             filtered_hr = []
+            bad_words = ["株価", "投資", "業績", "決算", "予想", "分析"] # 除外ワード
+            
             for r in raw_hr:
                 url_lower = r["url"].lower()
+                title_content = (r.get("title", "") + r.get("content", "")).lower()
+                
+                # ① ノイズキャンセリング（Python側で処理）
+                if any(bw in title_content for bw in bad_words):
+                    continue
+                
+                # ② タイトルまたは内容に社名（略称）が含まれているかチェック
+                if short_company.lower() not in title_content:
+                    continue
+                
+                # ③ ドメインごとの厳密なURLチェック
                 if "wantedly.com" in url_lower:
-                    # Wantedlyは指定スラッグ配下のストーリー記事のみに完全限定（他社・目次排除）
                     if rec_slug.lower() in url_lower and ("post_articles" in url_lower or "stories" in url_lower):
                         filtered_hr.append(r)
                 elif "prtimes.jp" in url_lower:
@@ -177,6 +204,7 @@ if st.button("🔍 1. 対象メディアから最新・重要記事を抽出", t
                         filtered_hr.append(r)
                 else:
                     filtered_hr.append(r)
+                    
             results["ヒト・組織"] = filtered_hr[:30] # 30件まで表示
 
             st.session_state.search_results = results
@@ -269,13 +297,12 @@ if st.session_state.research_done:
     """
     
     final_report_text = ""
-    context_chain = "" # 対策2: 冗長性排除のための引き継ぎコンテキスト
+    context_chain = ""
     
     with st.status("👑 編集長が文脈を引き継ぎ、重複を省きながら1章ずつ書き上げています...", expanded=True) as ed_status:
         for section_title, section_prompt in EDITOR_PROMPTS.items():
             st.write(f"✍️ {section_title} を執筆中...")
             
-            # 既に書いた内容をプロンプトに含め、重複解説を禁止する
             prompt_ed = f"対象企業: {company}\n\n【これまでの執筆内容（重複解説を避けること）】\n{context_chain}\n\n【リサーチャーが収集した事実と考察一覧】\n{integration_context}\n\n【あなたの任務】\n{section_prompt}\n\n※厳守：上記の【これまでの執筆内容】を必ず読み、既に説明されたキーワードや概念を初めて登場したかのように重複して解説しないでください。文脈が自然に繋がるように続きを書いてください。"
             
             try:
@@ -284,7 +311,6 @@ if st.session_state.research_done:
                 section_text = sec_resp.text
                 final_report_text += f"## {section_title}\n\n{section_text}\n\n---\n\n"
                 
-                # 次の章のために、今回書いた内容をコンテキストに追加
                 context_chain += f"【{section_title}】\n{section_text}\n\n"
             except Exception as e:
                 st.error(f"{section_title}の執筆中にエラー: {e}")
