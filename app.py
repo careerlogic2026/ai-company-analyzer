@@ -324,4 +324,33 @@ if st.session_state.research_done:
         for section_title, section_prompt in EDITOR_PROMPTS.items():
             st.write(f"✍️ {section_title} を執筆中...")
             
-            prompt_ed = f"対象企業: {company
+            prompt_ed = f"対象企業: {company}\n\n【これまでの執筆内容（重複解説を避けること）】\n{context_chain}\n\n{integration_context}\n\n【あなたの任務】\n{section_prompt}\n\n※厳守：上記の【これまでの執筆内容】を必ず読み、既に説明されたキーワードや概念を初めて登場したかのように重複して解説しないでください。文脈が自然に繋がるように続きを書いてください。"
+            
+            try:
+                time.sleep(3)
+                sec_resp = model.generate_content(prompt_ed)
+                section_text = sec_resp.text
+                final_report_text += f"## {section_title}\n\n{section_text}\n\n---\n\n"
+                context_chain += f"【{section_title}】\n{section_text}\n\n"
+            except Exception as e:
+                st.error(f"{section_title}の執筆中にエラー: {e}")
+                
+        ed_status.update(label="🎉 圧倒的な厚みと一貫性を持つ最終レポートが完成しました！", state="complete")
+
+    st.markdown(final_report_text)
+    
+    doc = Document()
+    doc.add_heading(f"{company} 企業研究・キャリア推論レポート", 0)
+    for para in final_report_text.split('\n'):
+        if para.startswith('## '):
+            doc.add_heading(para.replace('## ', ''), level=1)
+        elif para.strip() and para != "---":
+            doc.add_paragraph(para)
+            
+    bio = BytesIO(); doc.save(bio)
+    st.download_button("📄 レポートをWordでダウンロード", data=bio.getvalue(), file_name=f"{company}_DeepReport.docx", type="primary")
+
+    if st.button("🔄 最初からやり直す"):
+        for key in ["search_done", "research_done", "search_results"]:
+            st.session_state[key] = False if isinstance(st.session_state[key], bool) else {}
+        st.rerun()
