@@ -9,7 +9,6 @@ from tavily import TavilyClient
 import time
 import re
 import datetime
-from urllib.parse import urlparse
 
 # ==========================================
 # 0. 初期設定とUIスタイル
@@ -67,40 +66,42 @@ EDITOR_PROMPTS = {
 # 3. UI: コントロールパネル（入力セクション）
 # ==========================================
 st.title("🎯 企業分析AI: ハイブリッド・スカウター")
-st.write("公式ドメインの深層スキャンと、Web全域の広域探索を統合したプロ仕様のリサーチツールです。")
+st.write("「絶対外せない内部資料」は手動で確実に追加し、「大量の外部記事」はAIが自動探索するプロ仕様のツールです。")
 
-with st.container():
-    st.markdown("### 🔍 検索ターゲット設定")
-    col1, col2 = st.columns(2)
-    with col1:
-        company_name = st.text_input("🏢 企業名 (必須)", value="株式会社マクアケ")
-        official_url = st.text_input("🌐 公式ドメインURL (必須)", value="https://www.makuake.co.jp/")
-    with col2:
-        pr_url = st.text_input("📣 PR TIMES URL (任意・空白可)", value="https://prtimes.jp/main/html/searchrlp/company_id/36381")
-        rec_url = st.text_input("👥 Wantedly URL (任意・空白可)", value="https://www.wantedly.com/companies/makuake")
+company_name = st.text_input("🏢 企業名 (必須)", value="株式会社マクアケ")
 
-if st.button("🚀 デジタル資産の全方位スカウティングを開始", type="primary"):
+st.markdown("### 📊 A. 【確実性重視】 最重要ファクト指定（IR・ビジョン等）")
+ir_urls_input = st.text_area(
+    "分析の核となる「決算説明会資料(PDF)」や「コーポレートのビジョンページ」のURLを改行で入力してください。",
+    value="https://pdf.irpocket.com/C4477/yD3U/v5c7/O11m.pdf\n", 
+    height=80
+)
+
+st.markdown("### 🌐 B. 【網羅性重視】 外部メディア・採用ページ探索設定")
+col1, col2 = st.columns(2)
+with col1:
+    pr_url = st.text_input("📣 PR TIMES URL (任意・空白可)", value="https://prtimes.jp/main/html/searchrlp/company_id/36381")
+with col2:
+    rec_url = st.text_input("👥 Wantedly URL (任意・空白可)", value="https://www.wantedly.com/companies/makuake")
+
+if st.button("🚀 デジタル資産のハイブリッド・スカウティングを開始", type="primary"):
     if not gemini_key or not tavily_key: st.error("APIキーを設定してください。"); st.stop()
-    if not official_url: st.error("公式ドメインURLを入力してください。"); st.stop()
     
     client = TavilyClient(api_key=tavily_key)
     short_name = company_name.replace("株式会社", "").replace("合同会社", "").strip()
-    domain = urlparse(official_url).netloc
     now = datetime.datetime.now()
     years = f"({now.year} OR {now.year-1} OR {now.year-2})"
 
-    with st.spinner("AIが指定ドメインの内部スキャンと、Web全域からの情報収集を実行中..."):
-        results = {"A. 公式サイト構造 (内部)": [], "B. IR・経営資料 (PDF)": [], "C. 最新PR・メディア記事 (外部)": [], "D. 社員インタビュー・組織 (外部)": []}
+    with st.spinner("指定された資料をセットし、Web全域からPRと社員インタビューを大量収集しています..."):
+        results = {"A. 指定された重要資料 (内部/コア)": [], "B. 最新PR・メディア記事 (外部)": [], "C. 社員インタビュー・組織 (外部)": []}
         
-        # --- A. 公式サイト内部スキャン ---
-        q_internal = f"site:{domain} (事業内容 OR サービス OR ビジョン OR 会社概要 OR 沿革 OR 代表挨拶)"
-        results["A. 公式サイト構造 (内部)"] = client.search(query=q_internal, max_results=30).get("results", [])
+        # --- A. 手動入力された資料のパース ---
+        for i, u in enumerate(ir_urls_input.split('\n')):
+            if u.strip():
+                title = f"指定資料 {i+1} (PDF)" if u.lower().endswith('.pdf') else f"指定資料 {i+1} (WEB)"
+                results["A. 指定された重要資料 (内部/コア)"].append({"title": title, "url": u.strip(), "date_str": "手動指定"})
 
-        # --- B. IR・PDF探索 ---
-        q_ir = f"site:{domain} filetype:pdf OR \"{short_name}\" (決算説明会資料 OR 中期経営計画) filetype:pdf"
-        results["B. IR・経営資料 (PDF)"] = client.search(query=q_ir, max_results=30).get("results", [])
-
-        # --- C. PR・外部メディア探索 ---
+        # --- B. PR・外部メディア探索 ---
         pr_id_match = re.search(r'company_id/(\d+)', pr_url) if pr_url else None
         pr_id = pr_id_match.group(1) if pr_id_match else ""
         
@@ -116,10 +117,10 @@ if st.button("🚀 デジタル資産の全方位スカウティングを開始"
                 seen_pr.add(r["url"])
                 d = re.search(r'(202[4-6])[年/.-](1[0-2]|0?[1-9])[月/.-](3[01]|[12][0-9]|0?[1-9])', r['content'])
                 r['date_str'] = d.group(0) if d else f"{now.year}年推測"
-                results["C. 最新PR・メディア記事 (外部)"].append(r)
-        results["C. 最新PR・メディア記事 (外部)"].sort(key=lambda x: x.get('date_str',''), reverse=True)
+                results["B. 最新PR・メディア記事 (外部)"].append(r)
+        results["B. 最新PR・メディア記事 (外部)"].sort(key=lambda x: x.get('date_str',''), reverse=True)
 
-        # --- D. ヒト・組織探索 ---
+        # --- C. ヒト・組織探索 ---
         rec_slug_match = re.search(r'companies/([^/]+)', rec_url) if rec_url else None
         rec_slug = rec_slug_match.group(1) if rec_slug_match else short_name
 
@@ -136,8 +137,8 @@ if st.button("🚀 デジタル資産の全方位スカウティングを開始"
                 seen_hr.add(r["url"])
                 d = re.search(r'(202[4-6])[年/.-](1[0-2]|0?[1-9])[月/.-](3[01]|[12][0-9]|0?[1-9])', r['content'])
                 r['date_str'] = d.group(0) if d else f"{now.year}年推測"
-                results["D. 社員インタビュー・組織 (外部)"].append(r)
-        results["D. 社員インタビュー・組織 (外部)"].sort(key=lambda x: x.get('date_str',''), reverse=True)
+                results["C. 社員インタビュー・組織 (外部)"].append(r)
+        results["C. 社員インタビュー・組織 (外部)"].sort(key=lambda x: x.get('date_str',''), reverse=True)
 
         st.session_state.discovery_results = results
         st.session_state.discovery_done = True
@@ -149,14 +150,13 @@ if st.button("🚀 デジタル資産の全方位スカウティングを開始"
 # ==========================================
 if st.session_state.discovery_done and not st.session_state.analysis_done:
     st.divider()
-    st.markdown("### 📋 構築されたサイトマップ（分析対象の選別）")
-    st.info("AIが収集した情報群です。各カテゴリをクリックして展開し、分析に含めたい資料にチェックを入れてください。")
+    st.markdown("### 📋 構築された分析リスト（取捨選択）")
+    st.info("AIが収集・整理した情報群です。各カテゴリをクリックして展開し、分析に含めたい資料にチェックを入れてください。")
     
     selected_data = []
 
     for cat_label, hits in st.session_state.discovery_results.items():
-        # アコーディオン（Expander）UIの適用
-        with st.expander(f"🔻 {cat_label} (計 {len(hits)} 件)", expanded=False):
+        with st.expander(f"🔻 {cat_label} (計 {len(hits)} 件)", expanded=True if "A." in cat_label else False):
             if not hits:
                 st.write("該当する情報が見つかりませんでした。")
             for j, hit in enumerate(hits):
@@ -166,8 +166,8 @@ if st.session_state.discovery_done and not st.session_state.analysis_done:
                 
                 st.markdown(f"<div class='source-card'>{t_badge} {d_badge} <b>{hit['title']}</b><br><a href='{hit['url']}' target='_blank'><small>{hit['url']}</small></a></div>", unsafe_allow_html=True)
                 
-                # デフォルトで上位を自動チェック
-                default_check = True if j < 5 else False
+                # 指定資料(A)は全てON、それ以外(B,C)は上位5件をON
+                default_check = True if ("A." in cat_label) or (j < 5) else False
                 if st.checkbox("分析に含める", key=f"chk_{cat_label}_{j}", value=default_check):
                     selected_data.append({"url": hit['url'], "title": hit['title'], "cat": cat_label})
 
@@ -193,9 +193,8 @@ if st.session_state.analysis_done:
             st.write(f"📖 読解中({i+1}/{len(st.session_state.final_sources)}): {source['title'][:30]}...")
             text = extract_text_from_url(source['url'])
             
-            # カテゴリに応じたプロンプトを適用
-            if "IR" in source['cat']: p_task = PROMPT_FIN
-            elif "PR" in source['cat']: p_task = PROMPT_PR
+            if "A." in source['cat']: p_task = PROMPT_FIN
+            elif "B." in source['cat']: p_task = PROMPT_PR
             else: p_task = PROMPT_HR
             
             res = model.generate_content(f"資料:{source['title']}\n内容:{text}\n任務:{p_task}\n※事実に基づき具体的に考察せよ。")
